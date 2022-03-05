@@ -6,11 +6,11 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from PIL import Image
 import torch.nn as nn
+from torch.autograd import Variable
+from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, BatchNorm2d, Dropout
+from torch.optim import Adam, SGD
 import torch.nn.functional as F
-import torch.optim as optim
-
-# TO PLOT TENSORS AS IMAGES
-#print(CLASSES.get(int(data.classes[0].title())), plt.imshow(data[0][0].permute(1,2,0)))
+from torch.utils import data as data
 
 DATA_FOLDER = "panneaux_route"
 CLASSES = { 
@@ -59,63 +59,116 @@ CLASSES = {
     42:"Fin d'interdiction de depasser pour vehicules > 3.5t" 
 }
 
-######### IMPORT DATA #########
-def import_train_data() :
-    trans = transforms.Compose([transforms.Resize(32), transforms.ToTensor()])
-    train_data = datasets.ImageFolder("panneaux_route/Train", transform=trans)
-    return train_data
+######### DATA SETS #########
+from torch.utils.data import Dataset, DataLoader
+
+trainingset = datasets.ImageFolder("panneaux_route/Train", transform=transforms.Compose(
+    [transforms.Resize((32,32)),
+    transforms.ToTensor()]
+))
+
+print(trainingset.classes)
+print(CLASSES.get(int(trainingset.classes[trainingset[5005][1]]))), plt.imshow(trainingset[5005][0].permute(1,2,0))
+
+trainSize = int(0.8 * len(trainingset))
+validationSize = len(trainingset) - trainSize
+trainDataset, validationDataset = data.random_split(trainingset, [trainSize, validationSize])
+
+trainLoader = DataLoader(trainDataset, batch_size=256, shuffle=True)
+validationLoader = DataLoader(validationDataset, batch_size=1024)
+
+######### COMBIEN DE DONNEES PAR CLASSE #########
+def check_repartition(dico, dataset) :
+    for images, label in dataset :
+        if label in dico :
+            dico[label] += 1
+        else :
+            dico[label] = 1
+
+######### VERIFIONS LA REPARTITION DES DONNEES #########
+check_init = {}
+check_repartition(check_init, trainingset)
+print(check_init)
+
+check_traindataset = {}
+check_repartition(check_traindataset, trainDataset)
+print(check_traindataset)
+
+X = np.arange(len(check_init))
+ax = plt.subplot(111)
+ax.bar(X, check_init.values(), width=0.4, color='b', align='center')
+ax.bar(X-0.5, check_traindataset.values(), width=0.4, color='g', align='center')
+ax.legend(('ImageFolder','TrainDataset'))
+plt.xticks(X, check_init.keys())
+plt.title("Repartition", fontsize=17)
+
+plt.show()
 
 def import_test_data() :
     df = pd.read_csv('panneaux_route/Test.csv', sep=',')
     df_iter = df[['ClassId', 'Path']]
-    return df_iter
-
-train_data = import_train_data()
-test_data = import_test_data()
-
-######### CONVERT TO TENSORS #########
-def train_convert_to_tensors() :
+    
+    trans = transforms.Compose([transforms.Resize((34,34)), transforms.ToTensor()])
     data = []
-    labels = []
-    for a, b in train_data :
-        data.append(a)
-        labels.append(b)
-    inputs = data                   # tableau de tenseurs
-    targets = torch.tensor(labels)  # tenseurs des etiquettes des inputs
-    return inputs, targets
-
-def test_convert_to_tensors(df_iter) :
-    trans = transforms.Compose([transforms.Resize(32), transforms.ToTensor()])
-    inputs = []
-    targets = []
     for index, row in df_iter.iterrows() :
         img = Image.open('panneaux_route/'+row['Path'])
-        inputs.append(trans(img))
-        targets.append(row['ClassId'])
-    return inputs, targets
+        data.append((trans(img), row['ClassId']))
+    return data
+test_data = import_test_data()
+print(type(test_data))
 
-######### DATALOADER CREATION #########
-from torch.utils.data import Dataset, DataLoader
-class MyDataSet(Dataset):
-    def __init__(self, inputs, labels):
-        self.inputs = inputs
-        self.labels = labels
-    def __len__(self):
-        return len(self.inputs)
-    def __getitem__(self, index):
-        return self.inputs[index], self.labels[index]
+######### TRAIN LOOP #########
+def train_loop(train_loader, model, loss_map, lr=1e-3, epochs=20):
+    history = []
+    # use gpu if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    model.to(device)
+    # create optimizer
+    optimizer = Adam(model.parameters(), lr=lr)
+    # Train model
+    for epoch in range(epochs):
+        loss_epoch = 0.
+        for images, labels in train_loader:
+            # Transfers data to GPU
+            #images, labels = images.to(device), labels.to(device)
+            # Primal computation
+            output = model(images)            
+            loss = loss_map(output, labels)            
+            # Gradient computation
+            model.zero_grad()
+            loss.backward()
+            # perform parameter update based on current gradients
+            optimizer.step()
+            # compute the epoch training loss
+            loss_epoch += loss.item()
+        # display the epoch training loss
+        test_acc = validate(validationLoader, model)
+        history.append(
+            {'epoch' : epoch + 1,
+             'loss' : loss_epoch,
+             'test_acc' : test_acc})
+        print(f"epoch : {epoch + 1}/{epochs}, loss = {loss_epoch:.6f}, test_acc = {test_acc}%")
+    return history
 
-train_inputs, train_targets = train_convert_to_tensors()
-test_inputs, test_targets = test_convert_to_tensors(test_data)
-#print(train_inputs[0], train_targets[0])
-train_loader = DataLoader(MyDataSet(train_inputs, train_targets), batch_size=256)
-validation_loader = DataLoader(MyDataSet(test_inputs, test_targets), batch_size=256)
+######### VALIDATION #########
+def validate(data_loader, model):
+    nb_errors = 0
+    nb_tests = 0
+    device = next(model.parameters()).device # current model device
+    for i, (images, labels) in enumerate(data_loader):
+        #images, labels = images.to(device), labels.to(device) # move data same model device
+        output = model(images)
+        nb_errors += ((output.argmax(1)) != labels).sum()
+        nb_tests += len(images)
+    
+    return (100*(nb_tests-nb_errors)) / nb_tests
 
 ######### MODEL(S) #########
 class LeNet5(nn.Module):
     def __init__(self):
         super(LeNet5, self).__init__()
-        self.conv1 = nn.Conv2d(1, 6, kernel_size=(5, 5))
+        self.conv1 = nn.Conv2d(3, 6, kernel_size=(5, 5))
         self.conv2 = nn.Conv2d(6, 16, kernel_size=(5, 5))
         self.conv3 = nn.Conv2d(16, 120, kernel_size=(5, 5))
         self.fc1 = nn.Linear(120, 84)
@@ -132,57 +185,21 @@ class LeNet5(nn.Module):
         return layer7
 
 lenet = LeNet5()
-print("lenet parameters:")
-num_param = 0
-for p in lenet.parameters():
-    print(p.size())
-    num_param += torch.tensor(p.size()).prod().item()
-print("total lenet parameters:", num_param)
 
-def train_loop(train_loader, model, loss_map, lr=1e-3, epochs=20):
-    # use gpu if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-    model.to(device)
-    # create optimizer
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    # Train model
-    for epoch in range(epochs):
-        loss_epoch = 0.
-        for images, labels in train_loader:
-            # Transfers data to GPU
-            images, labels = images.to(device), labels.to(device)
-            # Primal computation
-            output = model(images)            
-            loss = loss_map(output, labels)            
-            # Gradient computation
-            model.zero_grad()
-            loss.backward()
-            # perform parameter update based on current gradients
-            optimizer.step()
-            # compute the epoch training loss
-            loss_epoch += loss.item()
-        # display the epoch training loss
-        print(f"epoch : {epoch + 1}/{epochs}, loss = {loss_epoch:.6f}")
-            
-
-def validate(data_loader, model):
-    nb_errors = 0
-    nb_tests = 0
-    device = next(model.parameters()).device # current model device
-    for i, (images, labels) in enumerate(data_loader):
-        images, labels = images.to(device), labels.to(device) # move data same model device
-        output = model(images)
-        nb_errors += ((output.argmax(1)) != labels).sum()
-        nb_tests += len(images)
-    
-    return (100*(nb_tests-nb_errors)) // nb_tests
-
-print(f"Lenet before learning, accuracy = {validate(validation_loader, lenet)}%")
-train_loop(
-    train_loader=train_loader, 
+print(f"Lenet before learning, accuracy = {validate(validationLoader, lenet)}%")
+h = train_loop(
+    train_loader=trainLoader, 
     model=lenet, 
     loss_map=nn.CrossEntropyLoss(),
-    lr=1e-3,
-    epochs=20)
-print(f"Lenet after learning, accuracy = {validate(validation_loader, lenet)}%")
+    lr=0.001,
+    epochs=15)
+#print(h)
+print(f"Lenet after learning, accuracy = {validate(validationLoader, lenet)}%")
+
+def show_learning(history):
+    fig, ax = plt.subplots()
+    ax.plot([h['epoch'] for h in history], [h['loss'] for h in history], label='loss')
+    ax.plot([h['epoch'] for h in history], [h['test_acc'] for h in history], label='test accuracy')
+    plt.legend()
+    plt.show()
+show_learning(h)
