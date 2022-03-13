@@ -1,18 +1,25 @@
-import numpy as np
+# LIBRAIRIES DE TORCH
 import torch as torch
+from torch.utils import data as data
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
-import pandas as pd
-from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
-from torch.autograd import Variable
-from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, BatchNorm2d, Dropout
 from torch.optim import Adam, SGD
 import torch.nn.functional as F
-from torch.utils import data as data
 
-DATA_FOLDER = "panneaux_route"
+# LIBRAIRIES DE TRAITEMENT DE DONNEES
+import numpy as np
+import pandas as pd
+from functools import reduce 
+
+# LIBRAIRIE DE TRAITEMENT D'IMAGES
+from PIL import Image
+
+# LIBRAIRIE DE PLOT
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+
 CLASSES = { 
     0:"Limitation de vitesse (20km/h)",
     1:"Limitation de vitesse (30km/h)", 
@@ -59,147 +66,450 @@ CLASSES = {
     42:"Fin d'interdiction de depasser pour vehicules > 3.5t" 
 }
 
-######### DATA SETS #########
-from torch.utils.data import Dataset, DataLoader
+if __name__ == '__main__':
+    print("### IMPORTATION RUNNING ###")
+else:
+    # on commence par recolter les donnees et transformer les images en tensors
+    raw_data = datasets.ImageFolder("panneaux_route/Train", transform=transforms.Compose(
+        [transforms.Resize((32,32)),
+        transforms.ToTensor()]
+    ))
 
-trainingset = datasets.ImageFolder("panneaux_route/Train", transform=transforms.Compose(
-    [transforms.Resize((32,32)),
-    transforms.ToTensor()]
-))
+    # construisons le dataloader
+    train_loader = DataLoader(raw_data, batch_size=1024, shuffle=True)
 
-print(trainingset.classes)
-print(CLASSES.get(int(trainingset.classes[trainingset[5005][1]]))), plt.imshow(trainingset[5005][0].permute(1,2,0))
-
-trainSize = int(0.8 * len(trainingset))
-validationSize = len(trainingset) - trainSize
-trainDataset, validationDataset = data.random_split(trainingset, [trainSize, validationSize])
-
-trainLoader = DataLoader(trainDataset, batch_size=256, shuffle=True)
-validationLoader = DataLoader(validationDataset, batch_size=1024)
-
-######### COMBIEN DE DONNEES PAR CLASSE #########
-def check_repartition(dico, dataset) :
-    for images, label in dataset :
-        if label in dico :
-            dico[label] += 1
-        else :
-            dico[label] = 1
-
-######### VERIFIONS LA REPARTITION DES DONNEES #########
-check_init = {}
-check_repartition(check_init, trainingset)
-print(check_init)
-
-check_traindataset = {}
-check_repartition(check_traindataset, trainDataset)
-print(check_traindataset)
-
-X = np.arange(len(check_init))
-ax = plt.subplot(111)
-ax.bar(X, check_init.values(), width=0.4, color='b', align='center')
-ax.bar(X-0.5, check_traindataset.values(), width=0.4, color='g', align='center')
-ax.legend(('ImageFolder','TrainDataset'))
-plt.xticks(X, check_init.keys())
-plt.title("Repartition", fontsize=17)
-
-plt.show()
-
-def import_test_data() :
     df = pd.read_csv('panneaux_route/Test.csv', sep=',')
-    df_iter = df[['ClassId', 'Path']]
-    
-    trans = transforms.Compose([transforms.Resize((34,34)), transforms.ToTensor()])
-    data = []
-    for index, row in df_iter.iterrows() :
-        img = Image.open('panneaux_route/'+row['Path'])
-        data.append((trans(img), row['ClassId']))
-    return data
-test_data = import_test_data()
-print(type(test_data))
+    transformation = transforms.Compose([transforms.Resize((32,32)), transforms.ToTensor()])
 
-######### TRAIN LOOP #########
-def train_loop(train_loader, model, loss_map, lr=1e-3, epochs=20):
-    history = []
-    # use gpu if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-    model.to(device)
-    # create optimizer
-    optimizer = Adam(model.parameters(), lr=lr)
-    # Train model
-    for epoch in range(epochs):
-        loss_epoch = 0.
-        for images, labels in train_loader:
-            # Transfers data to GPU
-            #images, labels = images.to(device), labels.to(device)
-            # Primal computation
-            output = model(images)            
-            loss = loss_map(output, labels)            
-            # Gradient computation
-            model.zero_grad()
-            loss.backward()
-            # perform parameter update based on current gradients
-            optimizer.step()
-            # compute the epoch training loss
-            loss_epoch += loss.item()
-        # display the epoch training loss
-        test_acc = validate(validationLoader, model)
-        history.append(
-            {'epoch' : epoch + 1,
-             'loss' : loss_epoch,
-             'test_acc' : test_acc})
-        print(f"epoch : {epoch + 1}/{epochs}, loss = {loss_epoch:.6f}, test_acc = {test_acc}%")
-    return history
+    labels = list(df['ClassId'])
+    images = list(df['Path'])
+    img_lst = []
 
-######### VALIDATION #########
-def validate(data_loader, model):
-    nb_errors = 0
-    nb_tests = 0
-    device = next(model.parameters()).device # current model device
-    for i, (images, labels) in enumerate(data_loader):
-        #images, labels = images.to(device), labels.to(device) # move data same model device
-        output = model(images)
-        nb_errors += ((output.argmax(1)) != labels).sum()
-        nb_tests += len(images)
-    
-    return (100*(nb_tests-nb_errors)) / nb_tests
+    for img in images :
+        img = "panneaux_route/" + img
+        img_lst.append(transformation(Image.open(img)))
 
-######### MODEL(S) #########
-class LeNet5(nn.Module):
-    def __init__(self):
-        super(LeNet5, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, kernel_size=(5, 5))
-        self.conv2 = nn.Conv2d(6, 16, kernel_size=(5, 5))
-        self.conv3 = nn.Conv2d(16, 120, kernel_size=(5, 5))
-        self.fc1 = nn.Linear(120, 84)
-        self.fc2 = nn.Linear(84, 43)
+    class MyDataSet(Dataset):
+        def __init__(self, inputs, labels):
+            self.inputs = inputs
+            self.labels = labels
+        def __len__(self):
+            return len(self.inputs)
+        def __getitem__(self, index):
+            return self.inputs[index], self.labels[index]
 
-    def forward(self, input):
-        layer1 = F.relu(self.conv1(input))                          
-        layer2 = F.max_pool2d(layer1, kernel_size=(2, 2), stride=2) 
-        layer3 = F.relu(self.conv2(layer2))                         
-        layer4 = F.max_pool2d(layer3, kernel_size=(2, 2), stride=2) 
-        layer5 = F.relu(self.conv3(layer4))                         
-        layer6 = F.relu(self.fc1(torch.flatten(layer5,1)))          
-        layer7 = self.fc2(layer6)                                   
-        return layer7
+    # le dataset
+    test_dataset = MyDataSet(img_lst, labels)
 
-lenet = LeNet5()
+    # le dataloader
+    test_dataloader = DataLoader(test_dataset, batch_size=256)
 
-print(f"Lenet before learning, accuracy = {validate(validationLoader, lenet)}%")
-h = train_loop(
-    train_loader=trainLoader, 
-    model=lenet, 
-    loss_map=nn.CrossEntropyLoss(),
-    lr=0.001,
-    epochs=15)
-#print(h)
-print(f"Lenet after learning, accuracy = {validate(validationLoader, lenet)}%")
+    print(raw_data.classes)
 
-def show_learning(history):
-    fig, ax = plt.subplots()
-    ax.plot([h['epoch'] for h in history], [h['loss'] for h in history], label='loss')
-    ax.plot([h['epoch'] for h in history], [h['test_acc'] for h in history], label='test accuracy')
-    plt.legend()
-    plt.show()
-show_learning(h)
+    for images, labels in train_loader :
+        for i in range(5) :
+            plt.imshow(images[i].permute(1,2,0))
+            plt.show()
+            print(CLASSES[int(raw_data.classes[labels[i]])]) # pour palier au probleme d'ordre des classes voici ce que nous devons faire
+        break
+
+    def repartition(dico, d, total) :
+        for image, label in d :
+            if raw_data.classes[label] in dico :
+                dico[raw_data.classes[label]] += 1
+            else :
+                dico[raw_data.classes[label]] = 1
+            total += 1
+
+        for key in dico :
+            dico[key] = 100*(dico[key] / total)
+
+        my_list = dico.items()
+        my_list = sorted(my_list)
+        x, y = zip(*my_list)
+
+        import plotly.graph_objects as go
+        fig = go.Figure(
+            data=[go.Bar(x=x, y=y)],
+            layout_title_text="Nombre d'images par classe (en %)",
+            layout_width=1000,
+            layout_height=500
+        )
+        fig.show()
+        return x, y
+
+    raw_count = {}
+    raw_total = 0
+
+    x_r, y_r = repartition(raw_count, raw_data, raw_total)
+
+    test_count = {}
+    test_total = 0
+
+    x_s, y_s = repartition(test_count, test_dataset, test_total)
+    print(test_dataset.__len__())
+
+    fig = go.Figure(
+        data=[
+            go.Bar(name='Train / Raw', x=x_r, y=y_r),
+            go.Bar(name='Test', x=x_s, y=y_s)
+        ],
+        layout_title_text="Nombre d'images par classe (en %)",
+        layout_width=1200,
+        layout_height=500
+    )
+    fig.show()
+
+    def validate_normal(predictions, labels) :
+        nb_errors = ((predictions.argmax(1)) != labels).sum()
+        return (len(predictions)-nb_errors).item()
+
+    def validate_training(data_loader, model) :
+        nb_errors = 0
+        nb_tests = 0
+        for i, (images, labels) in enumerate(data_loader):
+            output = model(images)
+            nb_errors += ((output.argmax(1)) != labels).sum()
+            nb_tests += len(images)
+        return (100*(nb_tests-nb_errors)) / nb_tests
+
+    def validate_test(data_loader, model):
+        nb_errors = 0
+        nb_tests = 0
+        for i, (images, labels) in enumerate(data_loader):
+            output = model(images.view(-1, 3, 32, 32)).argmax(1)
+            predictions = []
+            for prediction in output.tolist() :
+                predictions.append(raw_data.classes[prediction])
+
+            for i in range(len(predictions)) :
+                if int(predictions[i]) != int(labels[i]) :
+                    nb_errors += 1
+            nb_tests += len(images)
+        
+        return (100*(nb_tests-nb_errors)) / nb_tests
+
+    class LeNet5(nn.Module):
+        def __init__(self, dropout=0.0):
+            super(LeNet5, self).__init__()
+            self.conv1 = nn.Conv2d(3, 9, kernel_size=(5, 5))        # 3 * 9 * 5 * 5 + 9
+            self.conv1_2 = nn.Conv2d(9, 9, kernel_size=(3, 3))      # 9 * 9 * 3 * 3 + 9
+            self.dropout1 = nn.Dropout2d(p=dropout)
+            self.batchnorm1 = nn.BatchNorm2d(9)                     # as attribute, for affine=True
+
+            self.conv2 = nn.Conv2d(9, 32, kernel_size=(4,4))        # 9 * 32 * 3 * 3 + 32
+            self.conv2_1 = nn.Conv2d(32, 32, kernel_size=(3, 3))    # 32 * 32 * 3 * 3 + 32
+            self.dropout2 = nn.Dropout2d(p=dropout)
+            self.batchnorm2 = nn.BatchNorm2d(32)                    # as attribute, for affine=True
+
+            self.conv3 = nn.Conv2d(32, 64, kernel_size=(3,3))       # 32 * 64 * 3 * 3 + 92
+            self.conv3_1 = nn.Conv2d(64, 64, kernel_size=(3, 3))    # 64 * 64 * 3 * 23 + 92
+            self.dropout3 = nn.Dropout(p=dropout)
+            self.batchnorm3 = nn.BatchNorm2d(120)                    # as attribute, for affine=True
+
+            self.fc2 = nn.Linear(120, 98)                          # 120 * 98 + 98
+            self.batchnorm4 = nn.BatchNorm1d(98)
+
+            self.fc3 = nn.Linear(98, 43)                            # 98 * 43 + 43
+
+        def forward(self, input):                                               # B * 3 * 32 * 32  
+            layer1 = F.relu(self.conv1(input))                                  # B * 9 * 28 * 28    28 car T-K+1 : (32 - 5 + 1) * (32 - 5 + 1)
+            layer1_2 = F.relu(self.conv1_2(layer1))                             # B * 9 * 26 * 26
+            layer2 = F.max_pool2d(layer1_2, kernel_size=(2, 2), stride=2)       # B * 9 * 13 * 13
+            layer2_d = self.dropout1(layer2)
+            layer2_bn = self.batchnorm1(layer2_d)
+
+            layer3 = F.relu(self.conv2(layer2_bn))                              # B * 32 * 10 * 10
+            layer3_1 = F.relu(self.conv2_1(layer3))                             # B * 16 * 8 * 8
+            layer4 = F.max_pool2d(layer3_1, kernel_size=(2, 2), stride=2)       # B * 16 * 4 * 4
+            layer4_d = self.dropout1(layer4)
+            layer4_bn = self.batchnorm2(layer4_d)
+
+            layer5 = F.relu(self.conv3(layer4_bn))                              # B * 120 * 2 * 2
+            layer5_1 = F.relu(self.conv3_1(layer5))
+            layer5_d = self.dropout3(layer5_1)
+            layer5_bn = self.batchnorm3(layer5_d)     
+
+            layer6 = F.relu(self.fc1(torch.flatten(layer5_bn,1)))               # B * 92
+            layer6_d = self.dropout4(layer6)
+
+            layer7 = F.relu(self.fc2(layer6_d))                              # B * 68
+            layer7_bn = self.batchnorm4(layer7)       
+
+            layer8 = self.fc3(layer7_bn)                                        # B * 43
+            return layer8
+
+    net = LeNet5()
+
+    total_nb_par = 0
+    for p in net.parameters():
+        total_nb_par += reduce(lambda x, y: x*y, p.shape, 1)
+    print("total nb parameters: ", total_nb_par)
+
+    def train_loop(train_loader, model, loss_map, lr=1e-3, epochs=20, weight_decay=0) :
+        history = []    #for monitoring
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(device)
+        model.to(device)
+
+        optimizer = Adam(model.parameters(), lr=lr, weight_decay=weight_decay) # nous utilisons l'optimiseur Adam vu en cours
+
+        # boucle d'apprentissage
+        for epoch in range(epochs) :
+            loss_epoch = 0.
+            train_acc = 0.
+
+            model.train()
+
+            for images, labels in train_loader :
+                images, labels = images.to(device), labels.to(device)
+                output = model(images)
+                loss = loss_map(output, labels)
+
+                model.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                loss_epoch += loss.item()
+                train_acc += validate_normal(output, labels)
+
+            # affichage des differents epochs
+            model.eval()
+            test_acc = validate_test(test_dataloader, model)
+            train_acc = 100*train_acc/len(train_loader.dataset)
+            history.append(
+                {'epoch' : epoch + 1,
+                'loss' : loss_epoch,
+                'train_acc' : train_acc,
+                'valid_acc' : test_acc})
+            print(f"epoch : {epoch + 1}/{epochs}, loss = {loss_epoch:.6f}, train_acc = {train_acc}, test_acc = {test_acc}%")
+        return history
+
+    net     = LeNet5(0.4)
+    history = train_loop(train_loader, net, nn.CrossEntropyLoss(), lr=0.00155, epochs=10, weight_decay=0.008)
+
+    def show_loss(histories, without_first=False) :
+        history =  []
+        if without_first :
+            history = histories[1:]
+        else :
+            history = histories
+        fig, ax = plt.subplots()
+        ax.plot([h['epoch'] for h in history], [h['loss'] for h in history], label='loss')
+        plt.legend()
+        plt.show()
+
+    def show_learning(histories, without_first=False):
+        history =  []
+        if without_first :
+            history = histories[1:]
+        else :
+            history = histories
+        fig, ax = plt.subplots()
+        ax.plot([h['epoch'] for h in history], [h['train_acc'] for h in history], label='train accuracy')
+        ax.plot([h['epoch'] for h in history], [h['valid_acc'] for h in history], label='test accuracy')
+        plt.legend()
+        plt.show()
+        
+    show_loss(history, True)
+    show_learning(history, False)
+
+    def get_metrics(data_loader, model):
+        y_pred = []
+        y_true = []
+        for i, (images, labels) in enumerate(data_loader):
+            
+            output = model(images.view(-1, 3, 32, 32)).argmax(1)
+            #print(output)
+            predictions = []
+
+            for prediction in output.tolist() :
+                predictions.append(raw_data.classes[prediction])
+            for i in range(len(predictions)) :
+                y_pred.append(int(predictions[i]))
+                y_true.append(int(labels[i]))
+                
+        return y_pred, y_true
+
+    y_pred, y_true = get_metrics(test_dataloader, net)
+
+    from sklearn.metrics import classification_report
+    print(classification_report(y_true, y_pred, target_names=CLASSES.values()))
+
+    # on commence par recolter les donnees et transformer les images en tensors
+    raw_data_gr = datasets.ImageFolder("panneaux_route/Train", transform=transforms.Compose(
+        [   transforms.Grayscale(num_output_channels=1),
+            transforms.Resize((32,32)),
+            transforms.ToTensor()
+        ]
+    ))
+
+    # construisons le dataloader
+    train_loader_gr = DataLoader(raw_data_gr, batch_size=256, shuffle=True)
+
+    for images, labels in train_loader_gr :
+        for i in range(5) :
+            plt.imshow(images[i].permute(1,2,0))
+            plt.show()
+            print(CLASSES[int(raw_data.classes[labels[i]])]) # pour palier au probleme d'ordre des classes voici ce que nous devons faire
+        break
+
+    df = pd.read_csv('panneaux_route/Test.csv', sep=',')
+    transformation = transforms.Compose([transforms.Grayscale(num_output_channels=1), transforms.Resize((32,32)), transforms.ToTensor()])
+
+    labels = list(df['ClassId'])
+    images = list(df['Path'])
+    img_lst = []
+
+    for img in images :
+        img = "panneaux_route/" + img
+        img_lst.append(transformation(Image.open(img)))
+
+    # le dataset
+    test_dataset_gr = MyDataSet(img_lst, labels)
+
+    # le dataloader
+    test_dataloader_gr = DataLoader(test_dataset_gr, batch_size=256)
+
+    def validate_test_gr(data_loader, model):
+        nb_errors = 0
+        nb_tests = 0
+        for i, (images, labels) in enumerate(data_loader):
+            output = model(images.view(-1, 1, 32, 32)).argmax(1)
+            predictions = []
+            for prediction in output.tolist() :
+                predictions.append(raw_data.classes[prediction])
+
+            for i in range(len(predictions)) :
+                if int(predictions[i]) != int(labels[i]) :
+                    nb_errors += 1
+            nb_tests += len(images)
+        
+        return (100*(nb_tests-nb_errors)) / nb_tests
+
+    def train_loop_gr(train_loader, model, loss_map, lr=1e-3, epochs=20, weight_decay=0) :
+        history = []    #for monitoring
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(device)
+        model.to(device)
+
+        optimizer = Adam(model.parameters(), lr=lr, weight_decay=weight_decay) # nous utilisons l'optimiseur Adam vu en cours
+
+        # boucle d'apprentissage
+        for epoch in range(epochs) :
+            loss_epoch = 0.
+            train_acc = 0.
+
+            model.train()
+
+            for images, labels in train_loader :
+                images, labels = images.to(device), labels.to(device)
+                output = model(images)
+                loss = loss_map(output, labels)
+
+                model.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                loss_epoch += loss.item()
+                train_acc += validate_normal(output, labels)
+
+            # affichage des differents epochs
+            model.eval()
+            test_acc = validate_test_gr(test_dataloader_gr, model)
+            train_acc = 100*train_acc/len(train_loader.dataset)
+            history.append(
+                {'epoch' : epoch + 1,
+                'loss' : loss_epoch,
+                'train_acc' : train_acc,
+                'valid_acc' : test_acc})
+            print(f"epoch : {epoch + 1}/{epochs}, loss = {loss_epoch:.6f}, train_acc = {train_acc}, test_acc = {test_acc}%")
+        return history
+
+    class LeNet5_GR(nn.Module):
+        def __init__(self, dropout=0.0):
+            super(LeNet5_GR, self).__init__()
+            self.conv1 = nn.Conv2d(1, 16, kernel_size=(5, 5))        # 3 * 9 * 5 * 5 + 9
+            self.conv1_2 = nn.Conv2d(16, 22, kernel_size=(5, 5))      # 9 * 9 * 5 * 5 + 9
+            self.dropout1 = nn.Dropout2d(p=dropout)
+            self.batchnorm1 = nn.BatchNorm2d(22)                     # as attribute, for affine=True
+
+            self.conv2 = nn.Conv2d(22, 32, kernel_size=(3,3))        # 9 * 32 * 3 * 3 + 32
+            self.conv2_1 = nn.Conv2d(32, 42, kernel_size=(3, 3))    # 32 * 32 * 3 * 3 + 32
+            self.dropout2 = nn.Dropout2d(p=dropout)
+            self.batchnorm2 = nn.BatchNorm2d(42)                    # as attribute, for affine=True
+
+            self.conv3 = nn.Conv2d(42, 92, kernel_size=(3,3))       # 32 * 92 * 3 * 3 + 92
+            self.conv3_1 = nn.Conv2d(92, 128, kernel_size=(2, 2))    # 92 * 92 * 2 * 2 + 92
+            self.dropout3 = nn.Dropout(p=dropout)
+            self.batchnorm3 = nn.BatchNorm2d(128)                    # as attribute, for affine=True
+
+            self.fc1 = nn.Linear(128, 240)                           # 120 * 120 + 120
+            self.dropout4 = nn.Dropout(p=dropout)
+
+            self.fc2 = nn.Linear(240, 92)                           # 120 * 92 + 92
+            self.fc2_1 = nn.Linear(92, 68)                          # 92 * 68 + 68
+            self.batchnorm4 = nn.BatchNorm1d(68)
+
+            self.fc3 = nn.Linear(68, 43)                            # 68 * 43 + 43
+
+        def forward(self, input):                                               # B * 3 * 32 * 32  
+            layer1 = F.relu(self.conv1(input))                                  # B * 6 * 28 * 28    28 car T-K+1 : (32 - 5 + 1) * (32 - 5 + 1)
+            layer1_2 = F.relu(self.conv1_2(layer1))                             # B * 9 * 24 * 24
+            layer2 = F.max_pool2d(layer1_2, kernel_size=(2, 2), stride=2)       # B * 6 * 12 * 12
+            layer2_d = self.dropout1(layer2)
+            layer2_bn = self.batchnorm1(layer2_d)
+
+            layer3 = F.relu(self.conv2(layer2_bn))                              # B * 16 * 10 * 10
+            layer3_1 = F.relu(self.conv2_1(layer3))                             # B * 16 * 8 * 8
+            layer4 = F.max_pool2d(layer3_1, kernel_size=(2, 2), stride=2)       # B * 16 * 4 * 4
+            layer4_d = self.dropout1(layer4)
+            layer4_bn = self.batchnorm2(layer4_d)
+
+            layer5 = F.relu(self.conv3(layer4_bn))                              # B * 120 * 2 * 2
+            layer5_1 = F.relu(self.conv3_1(layer5))
+            layer5_d = self.dropout3(layer5_1)
+            layer5_bn = self.batchnorm3(layer5_d)     
+
+            layer6 = F.relu(self.fc1(torch.flatten(layer5_bn,1)))               # B * 92
+            layer6_d = self.dropout4(layer6)
+
+            layer8 = F.relu(self.fc2(layer6_d)) 
+            layer7 = F.relu(self.fc2_1(layer8))                                 # B * 68
+            layer8_bn = self.batchnorm4(layer7)       
+
+            layer7 = self.fc3(layer8_bn)                                        # B * 43
+            return layer7
+        
+    net_gr = LeNet5_GR()
+
+    total_nb_par = 0
+    for p in net_gr.parameters():
+        total_nb_par += reduce(lambda x, y: x*y, p.shape, 1)
+    print("total nb parameters: ", total_nb_par)
+
+    net_gr     = LeNet5_GR(0.4)
+    history = train_loop_gr(train_loader_gr, net_gr, nn.CrossEntropyLoss(), lr=0.0018, epochs=15, weight_decay=0.01)
+    show_loss(history)
+    show_learning(history)
+
+    def get_metrics_gr(data_loader, model):
+        y_pred = []
+        y_true = []
+        for i, (images, labels) in enumerate(data_loader):
+            
+            output = model(images.view(-1, 1, 32, 32)).argmax(1)
+            #print(output)
+            predictions = []
+
+            for prediction in output.tolist() :
+                predictions.append(raw_data.classes[prediction])
+            for i in range(len(predictions)) :
+                y_pred.append(int(predictions[i]))
+                y_true.append(int(labels[i]))
+                
+        return y_pred, y_true
+    y_pred, y_true = get_metrics_gr(test_dataloader_gr, net_gr)
+    print(classification_report(y_true, y_pred, target_names=CLASSES.values()))
