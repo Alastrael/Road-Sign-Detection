@@ -126,10 +126,8 @@ def __main__(args) :
         transforms.Grayscale(num_output_channels=1), transforms.Resize((32,32)), transforms.ToTensor()
     ])
     try:
-        raw_data = datasets.ImageFolder("panneaux_route/Train", transform=transforms.Compose(
-            [transforms.Resize((32,32)),
-            transforms.ToTensor()]
-        ))
+        classes = pd.read_csv('classes.csv')
+        classes = classes['0'].tolist()
         image = Image.open(path_to_image)
     except:
         print("An error as occured while opening the image : ", path_to_image)
@@ -151,7 +149,7 @@ def __main__(args) :
 
     plt.imshow(img_rgb.permute(1,2,0))
     
-    print("Prediction du model en rgb :",CLASSES[int(raw_data.classes[int(prediction_rgb)])], "(",int(raw_data.classes[int(prediction_rgb)]),")", "\nPrediction du model en gris:", CLASSES[int(raw_data.classes[int(prediction_gr)])], "(",int(raw_data.classes[int(prediction_rgb)]),")")
+    print("Prediction du model en rgb :",CLASSES[int(classes[int(prediction_rgb)])], "(",int(classes[int(prediction_rgb)]),")", "\nPrediction du model en gris:", CLASSES[int(classes[int(prediction_gr)])], "(",int(classes[int(prediction_rgb)]),")")
     plt.show()
     
 
